@@ -6,7 +6,6 @@ use bevy::{
     prelude::*,
     render::{
         Render, RenderApp, RenderSet,
-        camera::CameraUpdateSystem,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         graph::CameraDriverLabel,
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages},
@@ -81,6 +80,7 @@ pub struct ImageExportSettings {
     pub extension: String,
 
     pub enabled: bool,
+    pub frame_id: u64,
 }
 
 pub struct GpuImageExportSource {
@@ -142,6 +142,7 @@ impl Default for ImageExportSettings {
             output_dir: "out".into(),
             extension: "png".into(),
             enabled: false,
+            frame_id: 0,
         }
     }
 }
@@ -284,34 +285,42 @@ pub struct ImageExportPlugin {
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 pub enum ImageExportSystems {
-    SetupImageExport,
-    SetupImageExportFlush,
+    ImageExportSetup,
 }
 
 impl Plugin for ImageExportPlugin {
     fn build(&self, app: &mut App) {
         use ImageExportSystems::*;
 
-        app.configure_sets(
-            PostUpdate,
-            (SetupImageExport, SetupImageExportFlush)
-                .chain()
-                .before(CameraUpdateSystem),
-        )
-        .register_type::<ImageExportSource>()
-        .init_asset::<ImageExportSource>()
-        .register_asset_reflect::<ImageExportSource>()
-        .add_plugins((
-            RenderAssetPlugin::<GpuImageExportSource>::default(),
-            ExtractComponentPlugin::<ImageExportSettings>::default(),
-        ))
-        .add_systems(
-            PostUpdate,
-            (
-                setup_exporters.in_set(SetupImageExport),
-                apply_deferred.in_set(SetupImageExportFlush),
-            ),
-        );
+        // app.configure_sets(
+        //     PostUpdate,
+        //     (SetupImageExport, SetupImageExportFlush)
+        //         .chain()
+        //         .before(CameraUpdateSystem),
+        // )
+        // .register_type::<ImageExportSource>()
+        // .init_asset::<ImageExportSource>()
+        // .register_asset_reflect::<ImageExportSource>()
+        // .add_plugins((
+        //     RenderAssetPlugin::<GpuImageExportSource>::default(),
+        //     ExtractComponentPlugin::<ImageExportSettings>::default(),
+        // ))
+        // .add_systems(
+        //     PostUpdate,
+        //     (
+        //         setup_exporters.in_set(SetupImageExport),
+        //         apply_deferred.in_set(SetupImageExportFlush),
+        //     ),
+        // );
+        app.configure_sets(PostUpdate, ImageExportSetup)
+            .register_type::<ImageExportSource>()
+            .init_asset::<ImageExportSource>()
+            .register_asset_reflect::<ImageExportSource>()
+            .add_plugins((
+                RenderAssetPlugin::<GpuImageExportSource>::default(),
+                ExtractComponentPlugin::<ImageExportSettings>::default(),
+            ))
+            .add_systems(PostUpdate, setup_exporters.in_set(ImageExportSetup));
 
         let render_app = app.sub_app_mut(RenderApp);
 

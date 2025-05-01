@@ -152,6 +152,7 @@ fn setup(
             // Choose "exr" for HDR renders.
             extension: "jpeg".into(),
             enabled: true,
+            ..default()
         },
     ));
     commands.spawn((
@@ -162,6 +163,7 @@ fn setup(
             // Choose "exr" for HDR renders.
             extension: "png".into(),
             enabled: true,
+            ..default()
         },
     ));
 }
