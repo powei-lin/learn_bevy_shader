@@ -6,15 +6,36 @@
 //!
 //! This is a fairly low level example and assumes some familiarity with rendering concepts and wgpu.
 
-use bevy::prelude::*;
+use bevy::{
+    color::palettes::css::{ORANGE_RED, WHITE},
+    prelude::*,
+    render::{RenderPlugin, camera::RenderTarget, render_resource::*},
+};
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
+use bevy_rapier3d::prelude::*;
+use learn_shader::export_image::{
+    ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource,
+};
 use learn_shader::post_processing::PostProcessPlugin;
 
 fn main() {
+    let export_plugin = ImageExportPlugin::default();
+    let export_threads = export_plugin.threads.clone();
+
     App::new()
-        .add_plugins((DefaultPlugins, PostProcessPlugin))
+        .add_plugins(DefaultPlugins.set(RenderPlugin {
+            synchronous_pipeline_compilation: true,
+            ..default()
+        }))
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugins(RapierDebugRenderPlugin::default())
+        .add_plugins(PanOrbitCameraPlugin)
+        .add_plugins(export_plugin)
         .add_systems(Startup, setup)
         .add_systems(Update, rotate)
+        .add_systems(Update, screen_shot)
         .run();
+    export_threads.finish();
 }
 
 /// Set up a simple 3D scene
@@ -22,6 +43,9 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
     // cube
     commands.spawn((
@@ -35,6 +59,111 @@ fn setup(
         illuminance: 1_000.,
         ..default()
     });
+    commands.spawn(SceneRoot(asset_server.load(
+        GltfAssetLabel::Scene(0).from_asset("models/full_gameready_city_buildings.glb"),
+    )));
+    commands
+        .spawn(Collider::cuboid(60.0, 1.0, 60.0))
+        .insert(Transform::from_xyz(0.0, -1.0, 0.0));
+    // ambient light
+    commands.insert_resource(AmbientLight {
+        color: WHITE.into(),
+        brightness: 1000.0,
+    });
+
+    let output_texture_handle0 = {
+        let size = Extent3d {
+            width: 3840,
+            height: 2160,
+            ..default()
+        };
+        let mut export_texture = Image {
+            texture_descriptor: TextureDescriptor {
+                label: None,
+                size,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8UnormSrgb,
+                mip_level_count: 1,
+                sample_count: 1,
+                usage: TextureUsages::COPY_DST
+                    | TextureUsages::COPY_SRC
+                    | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+            ..default()
+        };
+        export_texture.resize(size);
+
+        images.add(export_texture)
+    };
+    let output_texture_handle1 = {
+        let size = Extent3d {
+            width: 3840,
+            height: 2160,
+            ..default()
+        };
+        let mut export_texture = Image {
+            texture_descriptor: TextureDescriptor {
+                label: None,
+                size,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8UnormSrgb,
+                mip_level_count: 1,
+                sample_count: 1,
+                usage: TextureUsages::COPY_DST
+                    | TextureUsages::COPY_SRC
+                    | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+            ..default()
+        };
+        export_texture.resize(size);
+
+        images.add(export_texture)
+    };
+    commands
+        .spawn((
+            Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            PanOrbitCamera::default(),
+        ))
+        .with_child((
+            Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            Camera3d::default(),
+            Camera {
+                target: RenderTarget::Image(output_texture_handle0.clone().into()),
+                ..default()
+            },
+        ))
+        .with_child((
+            Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+            Camera3d::default(),
+            Camera {
+                target: RenderTarget::Image(output_texture_handle1.clone().into()),
+                ..default()
+            },
+        ));
+    // commands.spawn(ImageExport(export_sources.add(output_texture_handle)));
+    // Spawn the ImageExport component to initiate the export of the output texture.
+    commands.spawn((
+        ImageExport(export_sources.add(output_texture_handle0)),
+        ImageExportSettings {
+            // Frames will be saved to "./out/[#####].png".
+            output_dir: "out0".into(),
+            // Choose "exr" for HDR renders.
+            extension: "jpeg".into(),
+            enabled: true,
+        },
+    ));
+    commands.spawn((
+        ImageExport(export_sources.add(output_texture_handle1)),
+        ImageExportSettings {
+            // Frames will be saved to "./out/[#####].png".
+            output_dir: "out1".into(),
+            // Choose "exr" for HDR renders.
+            extension: "png".into(),
+            enabled: true,
+        },
+    ));
 }
 
 #[derive(Component)]
@@ -45,5 +174,17 @@ fn rotate(time: Res<Time>, mut query: Query<&mut Transform, With<Rotates>>) {
     for mut transform in &mut query {
         transform.rotate_x(0.55 * time.delta_secs());
         transform.rotate_z(0.15 * time.delta_secs());
+    }
+}
+
+fn screen_shot(mut query: Query<&mut ImageExportSettings>, keyboard: Res<ButtonInput<KeyCode>>) {
+    for mut setting in &mut query {
+        setting.enabled = false;
+    }
+    if keyboard.just_pressed(KeyCode::Space) {
+        println!("screenshot!");
+        for mut setting in &mut query {
+            setting.enabled = true;
+        }
     }
 }

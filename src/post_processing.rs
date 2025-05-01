@@ -288,7 +288,8 @@ fn setup(mut commands: Commands) {
     // camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 0.0, 5.0)).looking_at(Vec3::default(), Vec3::Y),
+        Transform::from_translation(Vec3::new(0.0, 50.0, 50.0))
+            .looking_at(Vec3::default(), Vec3::Y),
         Camera {
             clear_color: Color::WHITE.into(),
             ..default()
@@ -311,7 +312,7 @@ fn update_settings(mut settings: Query<&mut PostProcessSettings>, time: Res<Time
         // Remap it to 0..1 because the intensity can't be negative
         intensity = intensity * 0.5 + 0.5;
         // Scale it to a more reasonable level
-        intensity *= 2.5;
+        intensity *= 0.5;
 
         // Set the intensity.
         // This will then be extracted to the render world and uploaded to the GPU automatically by the [`UniformComponentPlugin`]
