@@ -6,8 +6,11 @@
 //!
 //! This is a fairly low level example and assumes some familiarity with rendering concepts and wgpu.
 
+use std::f32::consts::PI;
+
 use bevy::{
-    color::palettes::css::{ORANGE_RED, WHITE},
+    color::palettes::css::{self, ORANGE_RED, WHITE},
+    picking::backend::ray::RayMap,
     prelude::*,
     render::{RenderPlugin, camera::RenderTarget, render_resource::*},
 };
@@ -33,10 +36,76 @@ fn main() {
         .add_plugins(export_plugin)
         .add_systems(Startup, setup)
         .add_systems(Update, rotate)
+        .add_systems(Update, bouncing_raycast)
         .add_systems(Update, screen_shot)
         .run();
     export_threads.finish();
 }
+
+// Bounces a ray off of surfaces `MAX_BOUNCES` times.
+fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast, gizmos: &mut Gizmos, color: Color) {
+    let mut intersections = Vec::with_capacity(MAX_BOUNCES + 1);
+    intersections.push((ray.origin, Color::srgb(30.0, 0.0, 0.0)));
+
+    for i in 0..MAX_BOUNCES {
+        // Cast the ray and get the first hit
+        let Some((_, hit)) = ray_cast.cast_ray(ray, &RayCastSettings::default()).first() else {
+            break;
+        };
+
+        // Draw the point of intersection and add it to the list
+        let brightness = 1.0 + 10.0 * (1.0 - i as f32 / MAX_BOUNCES as f32);
+        intersections.push((hit.point, Color::BLACK.mix(&color, brightness)));
+        gizmos.sphere(hit.point, 0.005, Color::BLACK.mix(&color, brightness * 2.0));
+
+        // Reflect the ray off of the surface
+        ray.direction = Dir3::new(ray.direction.reflect(hit.normal)).unwrap();
+        ray.origin = hit.point + ray.direction * 1e-6;
+    }
+    gizmos.linestrip_gradient(intersections);
+}
+
+const MAX_BOUNCES: usize = 64;
+const LASER_SPEED: f32 = 0.03;
+
+fn bouncing_raycast(
+    mut ray_cast: MeshRayCast,
+    mut gizmos: Gizmos,
+    time: Res<Time>,
+    // The ray map stores rays cast by the cursor
+    ray_map: Res<RayMap>,
+    material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
+    materials: Res<Assets<StandardMaterial>>,
+) {
+    // Cast an automatically moving ray and bounce it off of surfaces
+    let t = ops::cos((time.elapsed_secs() - 4.0).max(0.0) * LASER_SPEED) * PI;
+    let ray_pos = Vec3::new(ops::sin(t), ops::cos(3.0 * t) * 0.5, ops::cos(t)) * 0.5;
+    let ray_dir = Dir3::new(-ray_pos).unwrap();
+    let ray = Ray3d::new(ray_pos, ray_dir);
+    gizmos.sphere(ray_pos, 0.1, Color::WHITE);
+    bounce_ray(ray, &mut ray_cast, &mut gizmos, Color::from(css::RED));
+
+    // Cast a ray from the cursor and bounce it off of surfaces
+    let mut count = 0;
+    for (_, ray) in ray_map.iter() {
+        bounce_ray(*ray, &mut ray_cast, &mut gizmos, Color::from(css::GREEN));
+        println!("count {}", count);
+        count += 1;
+        if let Some((entity, hit)) = ray_cast.cast_ray(*ray, &RayCastSettings::default()).first() {
+            println!("{} {}", entity.index(), hit.triangle_index.unwrap_or(0));
+            if let Ok(m) = material_handles.get(*entity) {
+                if let Some(mm) = materials.get(m) {
+                    println!("mm {} {}", mm.metallic, mm.perceptual_roughness);
+                }
+                // println!("{}", m.0)
+            }
+        }
+    }
+    println!("materials: {}", material_handles.iter().len());
+}
+
+#[derive(Component)]
+struct Target;
 
 /// Set up a simple 3D scene
 fn setup(
@@ -59,9 +128,14 @@ fn setup(
         illuminance: 1_000.,
         ..default()
     });
-    commands.spawn(SceneRoot(asset_server.load(
-        GltfAssetLabel::Scene(0).from_asset("models/full_gameready_city_buildings.glb"),
-    )));
+    commands.spawn((
+        SceneRoot(
+            asset_server.load(
+                GltfAssetLabel::Scene(0).from_asset("models/full_gameready_city_buildings.glb"),
+            ),
+        ),
+        Target,
+    ));
     commands
         .spawn(Collider::cuboid(60.0, 1.0, 60.0))
         .insert(Transform::from_xyz(0.0, -1.0, 0.0));
