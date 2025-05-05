@@ -6,7 +6,7 @@
 //!
 //! This is a fairly low level example and assumes some familiarity with rendering concepts and wgpu.
 
-use std::f32::consts::PI;
+use std::{f32::consts::PI, ops::Deref};
 
 use bevy::{
     color::palettes::css::{self, ORANGE_RED, WHITE},
@@ -76,6 +76,9 @@ fn bouncing_raycast(
     ray_map: Res<RayMap>,
     material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
     materials: Res<Assets<StandardMaterial>>,
+    imgs: Res<Assets<Image>>,
+    mesh_handles: Query<&Mesh3d>,
+    meshes: Res<Assets<Mesh>>,
 ) {
     // Cast an automatically moving ray and bounce it off of surfaces
     let t = ops::cos((time.elapsed_secs() - 4.0).max(0.0) * LASER_SPEED) * PI;
@@ -92,16 +95,32 @@ fn bouncing_raycast(
         println!("count {}", count);
         count += 1;
         if let Some((entity, hit)) = ray_cast.cast_ray(*ray, &RayCastSettings::default()).first() {
-            println!("{} {}", entity.index(), hit.triangle_index.unwrap_or(0));
+            println!("entity id {} tri idx {}", entity.index(), hit.triangle_index.unwrap_or(0));
             if let Ok(m) = material_handles.get(*entity) {
                 if let Some(mm) = materials.get(m) {
-                    println!("mm {} {}", mm.metallic, mm.perceptual_roughness);
+                    if let Ok(mesh) = mesh_handles.get(*entity) {
+                        if let Some(mesh) = meshes.get(mesh) {
+                            for (ai, av) in mesh.attributes(){
+                                println!("got mesh {:?} {:?}", ai, av.len());
+                            }
+                        }
+                    }
+                    println!("mm {} {} {:?}", mm.metallic, mm.perceptual_roughness, mm.base_color);
+                    if let Some(img) = &mm.base_color_texture{
+                        // println!("uv {}", mm.base_color_channel);
+                        let im = imgs.get(img);
+                        println!("d {} len {}", im.unwrap().data[0], im.unwrap().data.len());
+                        let tri = hit.triangle.unwrap();
+                        let tri_idx = hit.triangle_index.unwrap();
+                        println!("tri {} {} {} {}", tri_idx, tri[0], tri[1], tri[2]);
+                        // im.unwrap().get_color_at(x, y)
+                    }
                 }
                 // println!("{}", m.0)
             }
         }
     }
-    println!("materials: {}", material_handles.iter().len());
+    println!("materials: {}\n", material_handles.iter().len());
 }
 
 #[derive(Component)]
