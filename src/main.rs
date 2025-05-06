@@ -12,7 +12,7 @@ use bevy::{
     color::palettes::css::{self, ORANGE_RED, WHITE},
     picking::backend::ray::RayMap,
     prelude::*,
-    render::{RenderPlugin, camera::RenderTarget, render_resource::*},
+    render::{RenderPlugin, camera::RenderTarget, mesh::Indices, render_resource::*},
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_rapier3d::prelude::*;
@@ -74,11 +74,13 @@ fn bouncing_raycast(
     time: Res<Time>,
     // The ray map stores rays cast by the cursor
     ray_map: Res<RayMap>,
-    material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
+    material_handles: Query<(&MeshMaterial3d<StandardMaterial>, &Mesh3d)>,
     materials: Res<Assets<StandardMaterial>>,
     imgs: Res<Assets<Image>>,
-    mesh_handles: Query<&Mesh3d>,
     meshes: Res<Assets<Mesh>>,
+    // Option<Read<Mesh2d>>,
+    // Option<Read<Mesh3d>>,
+    // Option<Read<SimplifiedMesh>>,
 ) {
     // Cast an automatically moving ray and bounce it off of surfaces
     let t = ops::cos((time.elapsed_secs() - 4.0).max(0.0) * LASER_SPEED) * PI;
@@ -95,18 +97,37 @@ fn bouncing_raycast(
         println!("count {}", count);
         count += 1;
         if let Some((entity, hit)) = ray_cast.cast_ray(*ray, &RayCastSettings::default()).first() {
-            println!("entity id {} tri idx {}", entity.index(), hit.triangle_index.unwrap_or(0));
-            if let Ok(m) = material_handles.get(*entity) {
+            println!(
+                "entity id {} tri idx {}",
+                entity.index(),
+                hit.triangle_index.unwrap_or(0)
+            );
+            if let Ok((m, mesh3d)) = material_handles.get(*entity) {
                 if let Some(mm) = materials.get(m) {
-                    if let Ok(mesh) = mesh_handles.get(*entity) {
-                        if let Some(mesh) = meshes.get(mesh) {
-                            for (ai, av) in mesh.attributes(){
-                                println!("got mesh {:?} {:?}", ai, av.len());
-                            }
+                    if let Some(mesh) = meshes.get(mesh3d) {
+                        for (ai, av) in mesh.attributes() {
+                            println!("got mesh {:?} {:?}", ai, av.len());
                         }
+
+                        println!("topo {:?}", mesh.primitive_topology());
+                        let indices = mesh.indices().unwrap();
+                        // println!("idxes {}",mesh.indices().unwrap().len());
+                        match indices {
+                            Indices::U16(vec) => {
+                                let l = vec.as_slice().chunks_exact(3).len();
+                                println!("indexes len {}", l);
+                            }
+                            Indices::U32(vec) => {
+                                let l = vec.as_slice().chunks_exact(3).len();
+                                println!("indexes len2 {}", l);
+                            }
+                        };
                     }
-                    println!("mm {} {} {:?}", mm.metallic, mm.perceptual_roughness, mm.base_color);
-                    if let Some(img) = &mm.base_color_texture{
+                    println!(
+                        "mm {} {} {:?}",
+                        mm.metallic, mm.perceptual_roughness, mm.base_color
+                    );
+                    if let Some(img) = &mm.base_color_texture {
                         // println!("uv {}", mm.base_color_channel);
                         let im = imgs.get(img);
                         println!("d {} len {}", im.unwrap().data[0], im.unwrap().data.len());
