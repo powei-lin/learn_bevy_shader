@@ -104,25 +104,6 @@ fn bouncing_raycast(
             );
             if let Ok((m, mesh3d)) = material_handles.get(*entity) {
                 if let Some(mm) = materials.get(m) {
-                    if let Some(mesh) = meshes.get(mesh3d) {
-                        for (ai, av) in mesh.attributes() {
-                            println!("got mesh {:?} {:?}", ai, av.len());
-                        }
-
-                        println!("topo {:?}", mesh.primitive_topology());
-                        let indices = mesh.indices().unwrap();
-                        // println!("idxes {}",mesh.indices().unwrap().len());
-                        match indices {
-                            Indices::U16(vec) => {
-                                let l = vec.as_slice().chunks_exact(3).len();
-                                println!("indexes len {}", l);
-                            }
-                            Indices::U32(vec) => {
-                                let l = vec.as_slice().chunks_exact(3).len();
-                                println!("indexes len2 {}", l);
-                            }
-                        };
-                    }
                     println!(
                         "mm {} {} {:?}",
                         mm.metallic, mm.perceptual_roughness, mm.base_color
@@ -131,10 +112,49 @@ fn bouncing_raycast(
                         // println!("uv {}", mm.base_color_channel);
                         let im = imgs.get(img);
                         println!("d {} len {}", im.unwrap().data[0], im.unwrap().data.len());
+                        hit.barycentric_coords;
                         let tri = hit.triangle.unwrap();
                         let tri_idx = hit.triangle_index.unwrap();
                         println!("tri {} {} {} {}", tri_idx, tri[0], tri[1], tri[2]);
                         // im.unwrap().get_color_at(x, y)
+                        if let Some(mesh) = meshes.get(mesh3d) {
+                            for (ai, av) in mesh.attributes() {
+                                println!("got mesh {:?} {:?}", ai, av.len());
+                            }
+
+                            println!("topo {:?}", mesh.primitive_topology());
+                            let indices = mesh.indices().expect("aaaaa");
+                            // println!("idxes {}",mesh.indices().unwrap().len());
+                            let vertex_idxs = match indices {
+                                Indices::U16(vec) => {
+                                    let ids = vec.as_slice().chunks_exact(3).nth(tri_idx).unwrap();
+                                    [ids[0] as usize, ids[1] as usize, ids[2] as usize]
+                                }
+                                Indices::U32(vec) => {
+                                    let mut v = vec.as_slice().chunks_exact(3);
+                                    println!("vv {}", v.len());
+                                    if tri_idx >= v.len() {
+                                        continue;
+                                    }
+                                    let ids = v.nth(tri_idx).expect("abc");
+                                    [ids[0] as usize, ids[1] as usize, ids[2] as usize]
+                                }
+                            };
+                            if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                                mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+                            {
+                                println!("items len {}", uvs.len());
+                                for i in vertex_idxs {
+                                    println!("uvs {:?}", uvs[i]);
+                                }
+                                // let uv0 = Vec2::from_array(vertex_uvs[i0]);
+                                // let uv1 = Vec2::from_array(vertex_uvs[i1]);
+                                // let uv2 = Vec2::from_array(vertex_uvs[i2]);
+
+                                // let bary = barycentric_coords(target_point, p0, p1, p2);
+                                // let uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+                            }
+                        }
                     }
                 }
                 // println!("{}", m.0)
