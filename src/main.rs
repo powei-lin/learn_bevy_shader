@@ -6,13 +6,23 @@
 //!
 //! This is a fairly low level example and assumes some familiarity with rendering concepts and wgpu.
 
-use std::{f32::consts::PI, ops::Deref};
+use rayon::prelude::*;
+use std::{f32::consts::PI, ops::Deref, time::Instant};
 
 use bevy::{
     color::palettes::css::{self, ORANGE_RED, WHITE},
-    picking::backend::ray::RayMap,
+    ecs::system::{SystemParam, lifetimeless::Read},
+    math::{FloatOrd, bounding::Aabb3d},
+    picking::{
+        backend::ray::RayMap,
+        mesh_picking::ray_cast::{
+            Backfaces, RayMeshHit, SimplifiedMesh, ray_aabb_intersection_3d, ray_mesh_intersection,
+        },
+    },
     prelude::*,
-    render::{RenderPlugin, camera::RenderTarget, mesh::Indices, render_resource::*},
+    render::{
+        RenderPlugin, camera::RenderTarget, mesh::Indices, primitives::Aabb, render_resource::*,
+    },
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_rapier3d::prelude::*;
@@ -43,13 +53,13 @@ fn main() {
 }
 
 // Bounces a ray off of surfaces `MAX_BOUNCES` times.
-fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast, gizmos: &mut Gizmos, color: Color) {
+fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast2, gizmos: &mut Gizmos, color: Color) {
     let mut intersections = Vec::with_capacity(MAX_BOUNCES + 1);
     intersections.push((ray.origin, Color::srgb(30.0, 0.0, 0.0)));
 
     for i in 0..MAX_BOUNCES {
         // Cast the ray and get the first hit
-        let Some((_, hit)) = ray_cast.cast_ray(ray, &RayCastSettings::default()).first() else {
+        let Some((_, hit)) = ray_cast.cast_ray_once(ray, &RayCastSettings::default()) else {
             break;
         };
 
@@ -65,11 +75,246 @@ fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast, gizmos: &mut Gizmos, c
     gizmos.linestrip_gradient(intersections);
 }
 
-const MAX_BOUNCES: usize = 64;
+// Bounces a ray off of surfaces `MAX_BOUNCES` times.
+fn bounce_ray_once(ray: Ray3d, ray_cast: &MeshRayCast2) -> Option<Vec3> {
+    if let Some((_, hit)) =
+        ray_cast.cast_ray_once(ray, &RayCastSettings::default().always_early_exit())
+    {
+        Some(hit.point)
+    } else {
+        None
+    }
+}
+
+const MAX_BOUNCES: usize = 1;
 const LASER_SPEED: f32 = 0.03;
 
+fn ouster(ray: Ray3d, ray_cast: &MeshRayCast2, gizmos: &mut Gizmos) {
+    const HSCAN: usize = 100;
+    const HFOV: f32 = 60.0_f32.to_radians();
+    const HSTEP: f32 = HFOV / (HSCAN - 1) as f32;
+    const HSTART: f32 = -HFOV / 2.0;
+
+    const VSCAN: usize = 20;
+    const VFOV: f32 = 30.0_f32.to_radians();
+    const VSTEP: f32 = VFOV / (VSCAN - 1) as f32;
+    const VSTART: f32 = -VFOV / 2.0;
+
+    for v in 0..VSCAN {
+        let v_angle = VSTART + v as f32 * VSTEP;
+        let points: Vec<_> = (0..HSCAN)
+            .par_bridge()
+            .filter_map(|h| {
+                let h_angle = HSTART + h as f32 * HSTEP;
+
+                // 建立一個方向是 h_angle 與 v_angle 的單位向量
+                let direction =
+                    Quat::from_rotation_y(h_angle) * Quat::from_rotation_x(v_angle) * ray.direction;
+
+                let new_ray = Ray3d {
+                    origin: ray.origin,
+                    direction: direction,
+                };
+                bounce_ray_once(new_ray, ray_cast)
+            })
+            .collect();
+        points.iter().for_each(|&p| {
+            gizmos.sphere(p, 0.005, css::RED);
+        });
+    }
+    // min_range (default = 0.9)
+    // max_range (default = 75.0)
+    // noise (default = 0.008)
+    // min_angle (default = -PI)
+    // max_angle (default = PI)
+}
+
+pub fn ray_intersection_over_mesh(
+    mesh: &Mesh,
+    transform: &Mat4,
+    ray: Ray3d,
+    culling: Backfaces,
+) -> Option<RayMeshHit> {
+    if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
+        return None; // ray_mesh_intersection assumes vertices are laid out in a triangle list
+    }
+    // Vertex positions are required
+    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+
+    // Normals are optional
+    let normals = mesh
+        .attribute(Mesh::ATTRIBUTE_NORMAL)
+        .and_then(|normal_values| normal_values.as_float3());
+
+    match mesh.indices() {
+        Some(Indices::U16(indices)) => {
+            ray_mesh_intersection(ray, transform, positions, normals, Some(indices), culling)
+        }
+        Some(Indices::U32(indices)) => {
+            ray_mesh_intersection(ray, transform, positions, normals, Some(indices), culling)
+        }
+        None => ray_mesh_intersection::<usize>(ray, transform, positions, normals, None, culling),
+    }
+}
+
+type MeshFilter = Or<(With<Mesh3d>, With<Mesh2d>, With<SimplifiedMesh>)>;
+
+#[derive(SystemParam)]
+pub struct MeshRayCast2<'w, 's> {
+    #[doc(hidden)]
+    pub meshes: Res<'w, Assets<Mesh>>,
+    #[doc(hidden)]
+    pub hits: Local<'s, Vec<(FloatOrd, (Entity, RayMeshHit))>>,
+    #[doc(hidden)]
+    pub output: Local<'s, Vec<(Entity, RayMeshHit)>>,
+    #[doc(hidden)]
+    pub culled_list: Local<'s, Vec<(FloatOrd, Entity)>>,
+    #[doc(hidden)]
+    pub culling_query: Query<
+        'w,
+        's,
+        (
+            Read<InheritedVisibility>,
+            Read<ViewVisibility>,
+            Read<Aabb>,
+            Read<GlobalTransform>,
+            Entity,
+        ),
+        MeshFilter,
+    >,
+    #[doc(hidden)]
+    pub mesh_query: Query<
+        'w,
+        's,
+        (
+            Option<Read<Mesh2d>>,
+            Option<Read<Mesh3d>>,
+            Option<Read<SimplifiedMesh>>,
+            Has<RayCastBackfaces>,
+            Read<GlobalTransform>,
+        ),
+        MeshFilter,
+    >,
+}
+
+impl<'w, 's> MeshRayCast2<'w, 's> {
+    /// Casts the `ray` into the world and returns a sorted list of intersections, nearest first.
+    pub fn cast_ray_once(
+        &self,
+        ray: Ray3d,
+        settings: &RayCastSettings,
+    ) -> Option<(Entity, RayMeshHit)> {
+        let ray_cull = info_span!("ray culling");
+        let ray_cull_guard = ray_cull.enter();
+
+        let mut hits = Vec::new();
+
+        // pub output: Local<'s, Vec<(Entity, RayMeshHit)>>,
+        // #[doc(hidden)]
+        // pub culled_list: Local<'s, Vec<(FloatOrd, Entity)>>,
+        // self.hits.clear();
+        // self.culled_list.clear();
+        // self.output.clear();
+
+        // Check all entities to see if the ray intersects the AABB. Use this to build a short list
+        // of entities that are in the path of the ray.
+        let (aabb_hits_tx, aabb_hits_rx) = crossbeam_channel::unbounded::<(FloatOrd, Entity)>();
+        let visibility_setting = settings.visibility;
+        self.culling_query.par_iter().for_each(
+            |(inherited_visibility, view_visibility, aabb, transform, entity)| {
+                let should_ray_cast = match visibility_setting {
+                    RayCastVisibility::Any => true,
+                    RayCastVisibility::Visible => inherited_visibility.get(),
+                    RayCastVisibility::VisibleInView => view_visibility.get(),
+                };
+                if should_ray_cast {
+                    if let Some(distance) = ray_aabb_intersection_3d(
+                        ray,
+                        &Aabb3d::new(aabb.center, aabb.half_extents),
+                        &transform.compute_matrix(),
+                    ) {
+                        aabb_hits_tx.send((FloatOrd(distance), entity)).ok();
+                    }
+                }
+            },
+        );
+        let mut culled_list: Vec<_> = aabb_hits_rx.try_iter().collect();
+
+        // Sort by the distance along the ray.
+        culled_list.sort_by_key(|(aabb_near, _)| *aabb_near);
+
+        drop(ray_cull_guard);
+
+        // Perform ray casts against the culled entities.
+        let mut nearest_blocking_hit = FloatOrd(f32::INFINITY);
+        let ray_cast_guard = debug_span!("ray_cast");
+        culled_list
+            .iter()
+            .filter(|(_, entity)| (settings.filter)(*entity))
+            .for_each(|(aabb_near, entity)| {
+                // Get the mesh components and transform.
+                let Ok((mesh2d, mesh3d, simplified_mesh, has_backfaces, transform)) =
+                    self.mesh_query.get(*entity)
+                else {
+                    return;
+                };
+
+                // Get the underlying mesh handle. One of these will always be `Some` because of the query filters.
+                let Some(mesh_handle) = simplified_mesh
+                    .map(|m| &m.0)
+                    .or(mesh3d.map(|m| &m.0).or(mesh2d.map(|m| &m.0)))
+                else {
+                    return;
+                };
+
+                // Is it even possible the mesh could be closer than the current best?
+                if *aabb_near > nearest_blocking_hit {
+                    return;
+                }
+
+                // Does the mesh handle resolve?
+                let Some(mesh) = self.meshes.get(mesh_handle) else {
+                    return;
+                };
+
+                // Backfaces of 2d meshes are never culled, unlike 3d meshes.
+                let backfaces = match (has_backfaces, mesh2d.is_some()) {
+                    (false, false) => Backfaces::Cull,
+                    _ => Backfaces::Include,
+                };
+
+                // Perform the actual ray cast.
+                let _ray_cast_guard = ray_cast_guard.enter();
+                let transform = transform.compute_matrix();
+                let intersection = ray_intersection_over_mesh(mesh, &transform, ray, backfaces);
+
+                if let Some(intersection) = intersection {
+                    let distance = FloatOrd(intersection.distance);
+                    if (settings.early_exit_test)(*entity) && distance < nearest_blocking_hit {
+                        // The reason we don't just return here is because right now we are
+                        // going through the AABBs in order, but that doesn't mean that an
+                        // AABB that starts further away can't end up with a closer hit than
+                        // an AABB that starts closer. We need to keep checking AABBs that
+                        // could possibly contain a nearer hit.
+                        nearest_blocking_hit = distance.min(nearest_blocking_hit);
+                    }
+                    hits.push((distance, (*entity, intersection)));
+                };
+            });
+
+        hits.retain(|(dist, _)| *dist <= nearest_blocking_hit);
+        hits.sort_by_key(|(k, _)| *k);
+        if let Some((_, (e, i))) = hits.first() {
+            Some((*e, i.to_owned()))
+        } else {
+            None
+        }
+        // hits.iter().map(|(_, (e, i))| (*e, i.to_owned())).collect()
+    }
+}
+
 fn bouncing_raycast(
-    mut ray_cast: MeshRayCast,
+    mut ray_cast: MeshRayCast2,
     mut gizmos: Gizmos,
     time: Res<Time>,
     // The ray map stores rays cast by the cursor
@@ -93,16 +338,25 @@ fn bouncing_raycast(
     // Cast a ray from the cursor and bounce it off of surfaces
     let mut count = 0;
     for (_, ray) in ray_map.iter() {
+        let now = Instant::now();
+
+        ouster(*ray, &ray_cast, &mut gizmos);
+        let elapsed_time = now.elapsed();
+        println!(
+            "Running slow_function() took {} seconds.",
+            elapsed_time.as_millis()
+        );
         bounce_ray(*ray, &mut ray_cast, &mut gizmos, Color::from(css::GREEN));
+        break;
         println!("count {}", count);
         count += 1;
-        if let Some((entity, hit)) = ray_cast.cast_ray(*ray, &RayCastSettings::default()).first() {
+        if let Some((entity, hit)) = ray_cast.cast_ray_once(*ray, &RayCastSettings::default()) {
             println!(
                 "entity id {} tri idx {}",
                 entity.index(),
                 hit.triangle_index.unwrap_or(0)
             );
-            if let Ok((m, mesh3d)) = material_handles.get(*entity) {
+            if let Ok((m, mesh3d)) = material_handles.get(entity) {
                 if let Some(mm) = materials.get(m) {
                     println!(
                         "mm {} {} {:?}",
@@ -147,12 +401,14 @@ fn bouncing_raycast(
                                 for i in vertex_idxs {
                                     println!("uvs {:?}", uvs[i]);
                                 }
-                                // let uv0 = Vec2::from_array(vertex_uvs[i0]);
-                                // let uv1 = Vec2::from_array(vertex_uvs[i1]);
-                                // let uv2 = Vec2::from_array(vertex_uvs[i2]);
+                                let uv0 = Vec2::from_array(uvs[vertex_idxs[0]]);
+                                let uv1 = Vec2::from_array(uvs[vertex_idxs[1]]);
+                                let uv2 = Vec2::from_array(uvs[vertex_idxs[2]]);
 
-                                // let bary = barycentric_coords(target_point, p0, p1, p2);
-                                // let uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+                                let uv = uv0 * hit.barycentric_coords.x
+                                    + uv1 * hit.barycentric_coords.y
+                                    + uv2 * hit.barycentric_coords.z;
+                                println!("uv {}", uv);
                             }
                         }
                     }
