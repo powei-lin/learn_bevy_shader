@@ -63,7 +63,8 @@ fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast2, gizmos: &mut Gizmos, 
 
     for i in 0..MAX_BOUNCES {
         // Cast the ray and get the first hit
-        let Some((_, hit)) = ray_cast.cast_ray_once(ray, &RayCastSettings::default(), MAX_DISTANCE)
+        let Some((_, hit)) =
+            ray_cast.cast_ray_once(ray, &MeshRayCastSettings::default(), MAX_DISTANCE)
         else {
             break;
         };
@@ -79,12 +80,22 @@ fn bounce_ray(mut ray: Ray3d, ray_cast: &mut MeshRayCast2, gizmos: &mut Gizmos, 
     }
     gizmos.linestrip_gradient(intersections);
 }
+fn bounce_ray_once_ori(ray: Ray3d, ray_cast: &mut MeshRayCast) -> Option<Vec3> {
+    if let Some((_, hit)) = ray_cast
+        .cast_ray(ray, &MeshRayCastSettings::default().always_early_exit())
+        .first()
+    {
+        Some(hit.point)
+    } else {
+        None
+    }
+}
 
 // Bounces a ray off of surfaces `MAX_BOUNCES` times.
 fn bounce_ray_once(ray: Ray3d, ray_cast: &MeshRayCast2) -> Option<Vec3> {
     if let Some((_, hit)) = ray_cast.cast_ray_once(
         ray,
-        &RayCastSettings::default().always_early_exit(),
+        &MeshRayCastSettings::default().always_early_exit(),
         MAX_DISTANCE,
     ) {
         Some(hit.point)
@@ -96,6 +107,40 @@ fn bounce_ray_once(ray: Ray3d, ray_cast: &MeshRayCast2) -> Option<Vec3> {
 const MAX_BOUNCES: usize = 1;
 const LASER_SPEED: f32 = 0.03;
 const MAX_DISTANCE: f32 = 10.0;
+fn ouster_original(ray: Ray3d, ray_cast: &mut MeshRayCast, gizmos: &mut Gizmos) {
+    const HSCAN: usize = 40;
+    const HFOV: f32 = 60.0_f32.to_radians();
+    const HSTEP: f32 = HFOV / (HSCAN - 1) as f32;
+    const HSTART: f32 = -HFOV / 2.0;
+
+    const VSCAN: usize = 30;
+    const VFOV: f32 = 30.0_f32.to_radians();
+    const VSTEP: f32 = VFOV / (VSCAN - 1) as f32;
+    const VSTART: f32 = -VFOV / 2.0;
+
+    for v in 0..VSCAN {
+        let v_angle = VSTART + v as f32 * VSTEP;
+        let points: Vec<_> = (0..HSCAN)
+            .into_iter()
+            .filter_map(|h| {
+                let h_angle = HSTART + h as f32 * HSTEP;
+
+                // 建立一個方向是 h_angle 與 v_angle 的單位向量
+                let direction =
+                    Quat::from_rotation_y(h_angle) * Quat::from_rotation_x(v_angle) * ray.direction;
+
+                let new_ray = Ray3d {
+                    origin: ray.origin,
+                    direction: direction,
+                };
+                bounce_ray_once_ori(new_ray, ray_cast)
+            })
+            .collect();
+        points.iter().for_each(|&p| {
+            gizmos.sphere(p, 0.005, css::RED);
+        });
+    }
+}
 
 fn ouster(ray: Ray3d, ray_cast: &MeshRayCast2, gizmos: &mut Gizmos) {
     const HSCAN: usize = 40;
@@ -130,11 +175,6 @@ fn ouster(ray: Ray3d, ray_cast: &MeshRayCast2, gizmos: &mut Gizmos) {
             gizmos.sphere(p, 0.005, css::RED);
         });
     }
-    // min_range (default = 0.9)
-    // max_range (default = 75.0)
-    // noise (default = 0.008)
-    // min_angle (default = -PI)
-    // max_angle (default = PI)
 }
 
 pub fn ray_intersection_over_mesh(
@@ -206,7 +246,7 @@ impl<'w, 's> MeshRayCast2<'w, 's> {
     pub fn cast_ray_once(
         &self,
         ray: Ray3d,
-        settings: &RayCastSettings,
+        settings: &MeshRayCastSettings,
         max_distance: f32,
     ) -> Option<(Entity, RayMeshHit)> {
         let ray_cull = info_span!("ray culling");
@@ -239,6 +279,7 @@ impl<'w, 's> MeshRayCast2<'w, 's> {
             },
         );
         let mut culled_list: Vec<_> = aabb_hits_rx.try_iter().collect();
+        // println!("cull {}", culled_list.len());
         let elapsed_time0 = timer0.elapsed();
 
         // Sort by the distance along the ray.
@@ -345,7 +386,7 @@ fn bouncing_raycast(
     let ray_dir = Dir3::new(-ray_pos).unwrap();
     let ray = Ray3d::new(ray_pos, ray_dir);
     gizmos.sphere(ray_pos, 0.1, Color::WHITE);
-    bounce_ray(ray, &mut ray_cast, &mut gizmos, Color::from(css::RED));
+    // bounce_ray(ray, &mut ray_cast, &mut gizmos, Color::from(css::RED));
 
     // Cast a ray from the cursor and bounce it off of surfaces
     let mut count = 0;
@@ -354,82 +395,79 @@ fn bouncing_raycast(
 
         ouster(*ray, &ray_cast, &mut gizmos);
         let elapsed_time = now.elapsed();
-        println!(
-            "Running slow_function() took {} seconds.",
-            elapsed_time.as_millis()
-        );
-        bounce_ray(*ray, &mut ray_cast, &mut gizmos, Color::from(css::GREEN));
+        println!("Running took {} micro seconds.", elapsed_time.as_micros());
+        // bounce_ray(*ray, &mut ray_cast, &mut gizmos, Color::from(css::GREEN));
         break;
         println!("count {}", count);
         count += 1;
-        if let Some((entity, hit)) =
-            ray_cast.cast_ray_once(*ray, &RayCastSettings::default(), MAX_DISTANCE)
-        {
-            println!(
-                "entity id {} tri idx {}",
-                entity.index(),
-                hit.triangle_index.unwrap_or(0)
-            );
-            if let Ok((m, mesh3d)) = material_handles.get(entity) {
-                if let Some(mm) = materials.get(m) {
-                    println!(
-                        "mm {} {} {:?}",
-                        mm.metallic, mm.perceptual_roughness, mm.base_color
-                    );
-                    if let Some(img) = &mm.base_color_texture {
-                        // println!("uv {}", mm.base_color_channel);
-                        let im = imgs.get(img);
-                        println!("d {} len {}", im.unwrap().data[0], im.unwrap().data.len());
-                        hit.barycentric_coords;
-                        let tri = hit.triangle.unwrap();
-                        let tri_idx = hit.triangle_index.unwrap();
-                        println!("tri {} {} {} {}", tri_idx, tri[0], tri[1], tri[2]);
-                        // im.unwrap().get_color_at(x, y)
-                        if let Some(mesh) = meshes.get(mesh3d) {
-                            for (ai, av) in mesh.attributes() {
-                                println!("got mesh {:?} {:?}", ai, av.len());
-                            }
+        // if let Some((entity, hit)) =
+        //     ray_cast.cast_ray_once(*ray, &RayCastSettings::default(), MAX_DISTANCE)
+        // {
+        //     println!(
+        //         "entity id {} tri idx {}",
+        //         entity.index(),
+        //         hit.triangle_index.unwrap_or(0)
+        //     );
+        //     if let Ok((m, mesh3d)) = material_handles.get(entity) {
+        //         if let Some(mm) = materials.get(m) {
+        //             println!(
+        //                 "mm {} {} {:?}",
+        //                 mm.metallic, mm.perceptual_roughness, mm.base_color
+        //             );
+        //             if let Some(img) = &mm.base_color_texture {
+        //                 // println!("uv {}", mm.base_color_channel);
+        //                 let im = imgs.get(img);
+        //                 println!("d {} len {}", im.unwrap().data[0], im.unwrap().data.len());
+        //                 hit.barycentric_coords;
+        //                 let tri = hit.triangle.unwrap();
+        //                 let tri_idx = hit.triangle_index.unwrap();
+        //                 println!("tri {} {} {} {}", tri_idx, tri[0], tri[1], tri[2]);
+        //                 // im.unwrap().get_color_at(x, y)
+        //                 if let Some(mesh) = meshes.get(mesh3d) {
+        //                     for (ai, av) in mesh.attributes() {
+        //                         println!("got mesh {:?} {:?}", ai, av.len());
+        //                     }
 
-                            println!("topo {:?}", mesh.primitive_topology());
-                            let indices = mesh.indices().expect("aaaaa");
-                            // println!("idxes {}",mesh.indices().unwrap().len());
-                            let vertex_idxs = match indices {
-                                Indices::U16(vec) => {
-                                    let ids = vec.as_slice().chunks_exact(3).nth(tri_idx).unwrap();
-                                    [ids[0] as usize, ids[1] as usize, ids[2] as usize]
-                                }
-                                Indices::U32(vec) => {
-                                    let mut v = vec.as_slice().chunks_exact(3);
-                                    println!("vv {}", v.len());
-                                    if tri_idx >= v.len() {
-                                        continue;
-                                    }
-                                    let ids = v.nth(tri_idx).expect("abc");
-                                    [ids[0] as usize, ids[1] as usize, ids[2] as usize]
-                                }
-                            };
-                            if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(uvs)) =
-                                mesh.attribute(Mesh::ATTRIBUTE_UV_0)
-                            {
-                                println!("items len {}", uvs.len());
-                                for i in vertex_idxs {
-                                    println!("uvs {:?}", uvs[i]);
-                                }
-                                let uv0 = Vec2::from_array(uvs[vertex_idxs[0]]);
-                                let uv1 = Vec2::from_array(uvs[vertex_idxs[1]]);
-                                let uv2 = Vec2::from_array(uvs[vertex_idxs[2]]);
+        //                     println!("topo {:?}", mesh.primitive_topology());
+        //                     let indices = mesh.indices().expect("aaaaa");
+        //                     // println!("idxes {}",mesh.indices().unwrap().len());
+        //                     let vertex_idxs = match indices {
+        //                         Indices::U16(vec) => {
+        //                             let ids = vec.as_slice().chunks_exact(3).nth(tri_idx).unwrap();
+        //                             [ids[0] as usize, ids[1] as usize, ids[2] as usize]
+        //                         }
+        //                         Indices::U32(vec) => {
+        //                             let mut v = vec.as_slice().chunks_exact(3);
+        //                             println!("vv {}", v.len());
+        //                             if tri_idx >= v.len() {
+        //                                 continue;
+        //                             }
+        //                             let ids = v.nth(tri_idx).expect("abc");
+        //                             [ids[0] as usize, ids[1] as usize, ids[2] as usize]
+        //                         }
+        //                     };
+        //                     if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(uvs)) =
+        //                         mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        //                     {
+        //                         println!("items len {}", uvs.len());
+        //                         for i in vertex_idxs {
+        //                             println!("uvs {:?}", uvs[i]);
+        //                         }
+        //                         let uv0 = Vec2::from_array(uvs[vertex_idxs[0]]);
+        //                         let uv1 = Vec2::from_array(uvs[vertex_idxs[1]]);
+        //                         let uv2 = Vec2::from_array(uvs[vertex_idxs[2]]);
 
-                                let uv = uv0 * hit.barycentric_coords.x
-                                    + uv1 * hit.barycentric_coords.y
-                                    + uv2 * hit.barycentric_coords.z;
-                                println!("uv {}", uv);
-                            }
-                        }
-                    }
-                }
-                // println!("{}", m.0)
-            }
-        }
+        //                         let uv = uv0 * hit.barycentric_coords.x
+        //                             + uv1 * hit.barycentric_coords.y
+        //                             + uv2 * hit.barycentric_coords.z;
+        //                         println!("uv {}", uv);
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //         // println!("{}", m.0)
+        //     }
+        // }
     }
     println!("materials: {}\n", material_handles.iter().len());
 }
@@ -473,6 +511,7 @@ fn setup(
     commands.insert_resource(AmbientLight {
         color: WHITE.into(),
         brightness: 1000.0,
+        affects_lightmapped_meshes: true,
     });
 
     let output_texture_handle0 = {

@@ -46,9 +46,9 @@ impl Node for ImageExportNode {
             {
                 render_context.command_encoder().copy_texture_to_buffer(
                     gpu_image.texture.as_image_copy(),
-                    ImageCopyBuffer {
+                    TexelCopyBufferInfo {
                         buffer: &source.buffer,
-                        layout: ImageDataLayout {
+                        layout: TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(source.padded_bytes_per_row),
                             rows_per_image: None,
@@ -101,6 +101,7 @@ impl RenderAsset for GpuImageExportSource {
 
     fn prepare_asset(
         source_asset: Self::SourceAsset,
+        _asset_id: AssetId<Self::SourceAsset>,
         (device, images): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let gpu_image = images.get(&source_asset.0).unwrap();
